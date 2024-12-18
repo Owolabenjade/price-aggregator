@@ -1,8 +1,6 @@
 ;; Title: DePo (Decentralized Price Oracle) Aggregator
 ;; depo-aggregator.clar
 
-(impl-trait 'SP466FNC0P7JWTNM2R9T199QRZN1MYEDTAR0KP27.oracle-trait.oracle-trait)
-
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant ERR_NOT_AUTHORIZED (err u100))
@@ -29,7 +27,7 @@
 (define-map price-providers principal bool)
 (define-map provider-prices principal uint)
 (define-map provider-last-update principal uint)
-(define-map sorted-prices uint uint)  ;; Index -> Price mapping for sorting
+(define-map active-provider-list uint principal)
 
 ;; Private Functions
 (define-private (is-contract-owner)
@@ -39,76 +37,66 @@
     (default-to false (map-get? price-providers provider)))
 
 (define-private (get-provider-price (provider principal))
-    (map-get? provider-prices provider))
+    (default-to u0 (map-get? provider-prices provider)))
+
+(define-private (collect-provider-prices (index uint) (prices (list 100 uint)))
+    (match (map-get? active-provider-list index)
+        provider (let ((price (get-provider-price provider)))
+                    (if (> price u0)
+                        (unwrap! (as-max-len? (append prices price) u100) prices)
+                        prices))
+        prices))
 
 (define-private (get-all-provider-prices)
-    (map unwrap-panic 
-        (filter is-some 
-            (map get-provider-price 
-                (map-get? price-providers provider)))))
+    (fold collect-provider-prices
+        (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)
+        (list)))
 
-;; Simple direct sort implementation
-(define-private (sort-price-list (prices (list 100 uint)))
-    (begin
-        ;; Clear previous sorted prices
-        (map-delete sorted-prices u0)
-        ;; Store prices in order
-        (map-set sorted-prices u0 
-            (fold check-min prices u0))
-        (ok (map-get? sorted-prices u0))))
+(define-private (find-min-price (prices (list 100 uint)))
+    (fold min-reducer prices u0))
 
-(define-private (check-min (price uint) (current-min uint))
-    (if (or (is-eq current-min u0) (< price current-min))
+(define-private (min-reducer (price uint) (min-price uint))
+    (if (or (is-eq min-price u0) (< price min-price))
         price
-        current-min))
-
-(define-private (calculate-median (prices (list 100 uint)))
-    (let ((len (len prices)))
-        (if (>= len MIN_PRICE_PROVIDERS)
-            (match (sort-price-list prices)
-                price (ok price)
-                error ERR_INSUFFICIENT_PROVIDERS)
-            ERR_INSUFFICIENT_PROVIDERS)))
-
-(define-private (is-price-valid (price uint) (reference uint))
-    (and 
-        (>= price (/ (* reference (- u1000 MAX_PRICE_DEVIATION)) u1000))
-        (<= price (/ (* reference (+ u1000 MAX_PRICE_DEVIATION)) u1000))))
+        min-price))
 
 ;; Public Functions
 (define-public (add-price-provider (provider principal))
     (begin
         (asserts! (is-contract-owner) ERR_NOT_AUTHORIZED)
         (asserts! (< (var-get active-providers) MAX_PRICE_PROVIDERS) ERR_NOT_AUTHORIZED)
-        (map-set price-providers provider true)
-        (var-set active-providers (+ (var-get active-providers) u1))
-        (ok true)))
+        (let ((provider-count (var-get active-providers)))
+            (map-set price-providers provider true)
+            (map-set active-provider-list provider-count provider)
+            (var-set active-providers (+ provider-count u1))
+            (ok true))))
 
 (define-public (remove-price-provider (provider principal))
     (begin
         (asserts! (is-contract-owner) ERR_NOT_AUTHORIZED)
-        (map-delete price-providers provider)
-        (map-delete provider-prices provider)
-        (map-delete provider-last-update provider)
-        (var-set active-providers (- (var-get active-providers) u1))
-        (ok true)))
+        (let ((provider-count (var-get active-providers)))
+            (map-delete price-providers provider)
+            (map-delete provider-prices provider)
+            (map-delete provider-last-update provider)
+            (map-delete active-provider-list (- provider-count u1))
+            (var-set active-providers (- provider-count u1))
+            (ok true))))
 
 (define-public (submit-price (price uint))
     (begin
         (asserts! (is-authorized-provider tx-sender) ERR_NOT_AUTHORIZED)
         (asserts! (>= price MIN_VALID_PRICE) ERR_PRICE_TOO_LOW)
         (asserts! (<= price MAX_VALID_PRICE) ERR_PRICE_TOO_HIGH)
-        
+
         (map-set provider-prices tx-sender price)
         (map-set provider-last-update tx-sender block-height)
         
         (let ((prices (get-all-provider-prices)))
-            (match (calculate-median prices)
-                median (begin 
-                    (var-set current-price median)
-                    (var-set last-update-block block-height)
-                    (ok median))
-                error error))))
+            (asserts! (>= (len prices) MIN_PRICE_PROVIDERS) ERR_INSUFFICIENT_PROVIDERS)
+            (let ((median (find-min-price prices)))
+                (var-set current-price median)
+                (var-set last-update-block block-height)
+                (ok median)))))
 
 (define-read-only (get-current-price)
     (begin
